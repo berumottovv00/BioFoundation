@@ -11,3 +11,12 @@ venv/
 outputs/
 checkpoints/
 wandb/
+/.idea/.gitignore
+/.idea/BioFoundation.iml
+/.idea/misc.xml
+/.idea/modules.xml
+/.idea/inspectionProfiles/profiles_settings.xml
+/.idea/inspectionProfiles/Project_Default.xml
+/requirements.txt.bak
+/uv.lock
+/.idea/vcs.xml

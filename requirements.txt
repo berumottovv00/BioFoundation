@@ -9,7 +9,6 @@ lightning
 tqdm
 pandas
 mne
-nvidia-nccl-cu11
 peft
 psutil
 pyyaml
