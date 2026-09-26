@@ -145,7 +145,8 @@ class MaskTask(pl.LightningModule):
         self.log('val_loss', loss, prog_bar=True, on_step=True, on_epoch=True, logger=True, sync_dist=True) 
         
         # Fixed indices for logging signals
-        random_indices = [6, 16, 30]
+        # 只保留小于 batch 大小的下标：batch_size < 31 时，写死的 16、30 会越界报 IndexError
+        random_indices = [i for i in (6, 16, 30) if i < X.shape[0]]
 
         # Log signals with mask only for the first validation batch
         if batch_idx == 0:

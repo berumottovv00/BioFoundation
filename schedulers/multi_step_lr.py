@@ -41,7 +41,6 @@ class MultiStepLRWarmup(MultiStepLR):
         warmup_init_lr: float = 0.0,
         gamma: float = 0.1,
         last_epoch: int = -1,
-        verbose: bool = False,
     ):
         """
         Initializes the MultiStepLRWarmup scheduler.
@@ -60,14 +59,13 @@ class MultiStepLRWarmup(MultiStepLR):
 
             gamma (float, optional): Multiplicative factor of learning rate decay.
 
-            last_epoch (int, optional): The index of last epoch. 
-
-            verbose (bool, optional): If True, prints a message to stdout for each update.
+            last_epoch (int, optional): The index of last epoch.
         """
         self.warmup_iter = warmup_iter
         self.warmup_init_lr = warmup_init_lr
+        # 不再传 verbose：torch 2.7 的 MultiStepLR 已经删掉了这个参数（2.2 起弃用），传了会报参数个数错误
         super(MultiStepLRWarmup, self).__init__(
-            optimizer, milestones, gamma, last_epoch, verbose
+            optimizer, milestones, gamma, last_epoch
         )
 
     def get_lr(self):

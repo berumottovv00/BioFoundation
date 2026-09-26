@@ -1,0 +1,85 @@
+#@package _global_
+#*----------------------------------------------------------------------------*
+#* Copyright (C) 2025 ETH Zurich, Switzerland                                 *
+#* SPDX-License-Identifier: Apache-2.0                                        *
+#*                                                                            *
+#* Licensed under the Apache License, Version 2.0 (the "License");            *
+#* you may not use this file except in compliance with the License.           *
+#* You may obtain a copy of the License at                                    *
+#*                                                                            *
+#* http://www.apache.org/licenses/LICENSE-2.0                                 *
+#*                                                                            *
+#* Unless required by applicable law or agreed to in writing, software        *
+#* distributed under the License is distributed on an "AS IS" BASIS,          *
+#* WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.   *
+#* See the License for the specific language governing permissions and        *
+#* limitations under the License.                                             *
+#*----------------------------------------------------------------------------*
+#
+# Smoke-test QAP (quantization-aware pretraining) run: FEMBA_tiny INT8
+# (config/model/FEMBA_tiny_int8_pretrain.yaml) + fake HDF5 data (see
+# make_datasets/make_fake_pretrain_demo.py), single GPU, tiny epoch budget.
+# Same as FEMBA_pretrain_demo.yaml except: INT8 model, batch_size 32,
+# io.base_output_path set. Goal: prove Hydra config, Lightning loop, mask
+# generation and the Brevitas INT8 encoder wire together end-to-end.
+#
+# Run (see docs/qap_step5_6_verification.md):
+#   export DATA_PATH=/root/autodl-tmp/data
+#   export CHECKPOINT_DIR=/root/autodl-tmp/experiments
+#   python make_datasets/make_fake_pretrain_demo.py --out ${DATA_PATH}/demo/pretrain_fake.h5 --num-samples 1000
+#   python -u run_train.py +experiment=FEMBA_qap_demo
+tag: FEMBA_qap_demo
+
+gpus: 1
+num_nodes: 1
+num_workers: 2
+batch_size: 32
+
+final_validate: True
+final_test: False
+
+pretrained_checkpoint_path: null
+io:
+  base_output_path: ${env:CHECKPOINT_DIR}/tb_logs
+  checkpoint_dirpath: ${env:CHECKPOINT_DIR}/checkpoints
+  version: 0
+
+defaults:
+  - override /data_module: pretrain_data_module_demo
+  - override /model: FEMBA_tiny_int8_pretrain
+  - override /scheduler: multi_step_lr
+  - override /task: pretrain_task
+  - override /criterion: pretrain_criterion
+
+masking:
+  patch_size: [2, 16]
+  masking_ratio: 0.6
+
+input_normalization:
+  normalize: True
+  quartile_normalization_lower_val: -20
+  quartile_normalization_upper_val:  20
+
+scheduler:
+  gamma: 0.1
+
+trainer:
+  accelerator: gpu
+  log_every_n_steps: 5
+  num_nodes: ${num_nodes}
+  devices: ${gpus}
+  strategy: auto
+  max_epochs: 1
+  gradient_clip_val: 1
+  limit_train_batches: 20
+  limit_val_batches: 5
+
+model_checkpoint:
+  save_last: True
+  monitor: "val_loss"
+  mode: "min"
+  save_top_k: 1
+
+optimizer:
+  optim: AdamW
+  lr: 1e-3

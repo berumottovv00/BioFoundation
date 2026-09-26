@@ -155,7 +155,9 @@ def train(cfg: DictConfig):
     results: dict = {}
     if cfg.training:
         print("===> Start training")
-        trainer.fit(model, data_module, ckpt_path=last_ckpt)
+        # weights_only=False：checkpoint 里存了 Hydra 的 DictConfig（save_hyperparameters），
+        # torch>=2.6 默认 weights_only=True 会拒绝加载；这里只加载本次训练自己生成的 checkpoint，来源可信
+        trainer.fit(model, data_module, ckpt_path=last_ckpt, weights_only=False)
 
     best_ckpt = model_checkpoint.best_model_path
 
@@ -165,7 +167,7 @@ def train(cfg: DictConfig):
     # ===== 步骤6: 用最优 checkpoint 做一次验证 =====
     if cfg.final_validate:
         print("===> Start validation")
-        trainer.validate(model, data_module, ckpt_path=best_ckpt)
+        trainer.validate(model, data_module, ckpt_path=best_ckpt, weights_only=False)
 
     # ===== 步骤7: 用最优 checkpoint 做一次测试 =====
     if cfg.final_test:
@@ -216,7 +218,7 @@ def _run_test(
         logger=wandb_logger if wandb_logger else [],
     )
     print("===> Start testing")
-    test_results = trainer.test(module, datamodule=datamodule, ckpt_path=ckpt)
+    test_results = trainer.test(module, datamodule=datamodule, ckpt_path=ckpt, weights_only=False)
     results["test_metrics"] = test_results
     return results, trainer
 
