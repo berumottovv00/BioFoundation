@@ -53,6 +53,10 @@ class MaskTask(pl.LightningModule):
 
     def generate_mask(self, batch_size, C, T):
         """
+        ===== 步骤0: 生成 mask（在 FEMBA.forward 的步骤1之前调用） =====
+        按 patch 网格随机选取 masking_ratio 比例的矩形块标记为 True，
+        供 FEMBA.forward() 的步骤1把这些区域置零。
+
         Generate a boolean mask for block-wise rectangular masking.
 
         Args:
@@ -100,17 +104,17 @@ class MaskTask(pl.LightningModule):
         """
         batch = as_signal_batch(batch)
         X = batch["input"]
-        mask = self.generate_mask(X.shape[0], X.shape[1], X.shape[2])
+        mask = self.generate_mask(X.shape[0], X.shape[1], X.shape[2])  # 步骤0
 
         if self.normalize:
             X = self.normalize_fct(X)
 
-        # Pass masked input through the model to get reconstruction and embeddings
+        # 步骤1-5: 掩码应用 -> PatchEmbed -> Encoder -> Decoder -> 返回 (重建信号, 原始信号)，见 models/FEMBA.py forward()
         x_reconstructed, x_embedded = self.model(X, mask)
 
         # Compute loss only on masked parts
         masked_loss, _ = self.criterion(x_reconstructed, x_embedded, mask)
-        loss = masked_loss 
+        loss = masked_loss
 
         self.log('train_loss', masked_loss, on_step=True, on_epoch=True, prog_bar=True, logger=True)
         return loss

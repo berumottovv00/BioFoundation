@@ -4,6 +4,13 @@
 """
 Test 34: FEMBA Tiny INT8 (True Architecture)
 
+中文说明：
+本文件是 FEMBA（PatchEmbed + 双向 Mamba 编码器 + 分类头）的 INT8 量化版本，
+用 Brevitas 的量化层（QuantIdentity/QuantLinear/QuantConv2d 等）重新实现了
+models/FEMBA.py 中 FEMBA 的计算图，用于 QAT（量化感知训练）以及后续 ARES
+"伪量化 -> 真 INT8" 的转换、部署到 GAP9。
+注意：这是分类分支（带 classifier），不是预训练重建分支（没有 Decoder）。
+
   - Input: (1, 1, 22, 1280) - 22 EEG channels, 1280 samples (~5s @ 256Hz)
   - Patch Embedding (patch_size=(2,16), stride=(2,16), embed_dim=35)
   - d_model = 385 (11 * 35)
@@ -60,6 +67,16 @@ class FEMBATinyInt8(nn.Module):
         d_conv: Conv1d kernel size in MAMBA - default 4
         num_blocks: Number of encoder blocks - default 2
         num_classes: Number of output classes - default 2 (binary classification)
+
+    中文参数说明：
+        inp_size：输入尺寸（EEG 通道数，采样点数），默认 (22, 1280)
+        patch_size / stride：patch embedding 的切块大小/步长，默认 (2, 16)
+        embed_dim：每个 patch 行的嵌入维度，默认 35
+        expand：Mamba d_inner 相对 d_model 的扩张倍数，默认 4（FEMBA 标准配置）
+        d_state：SSM 状态维度，默认 16
+        d_conv：Mamba 内部 depthwise conv1d 的卷积核大小，默认 4
+        num_blocks：双向 Mamba 编码器 block 数量，默认 2
+        num_classes：分类类别数，默认 2（二分类）
     """
 
     def __init__(
@@ -85,19 +102,22 @@ class FEMBATinyInt8(nn.Module):
         self.d_state = d_state
         self.d_conv = d_conv
         self.num_blocks = num_blocks
-        bit_width = 8
+        bit_width = 8  # 全局量化位宽：权重与激活统一用 INT8
 
         # Calculate dimensions after patch embedding
+        # 计算 patch embedding 之后的网格尺寸/序列长度/模型维度
         H, W = inp_size
         self.grid_h = (H - patch_size[0]) // stride[0] + 1
         self.grid_w = (W - patch_size[1]) // stride[1] + 1
-        self.seq_len = self.grid_w  # Sequence length
-        self.d_model = self.grid_h * embed_dim  # Model dimension
+        self.seq_len = self.grid_w  # Sequence length  # 序列长度（Mamba 沿此维度做扫描）
+        self.d_model = self.grid_h * embed_dim  # Model dimension  # 模型维度 = grid_h * embed_dim
 
         # True FEMBA: d_inner = expand * d_model (expand=4)
+        # Mamba 内部展开维度 = expand * d_model
         self.d_inner = expand * self.d_model
 
         # dt_rank as per FEMBA spec
+        # dt（离散化步长）投影的秩，按 FEMBA 规格取 ceil(d_model/16)
         self.dt_rank = math.ceil(self.d_model / 16)
 
         print(f"[FEMBATinyInt8] Configuration:")
@@ -121,12 +141,14 @@ class FEMBATinyInt8(nn.Module):
         print(f"  Total for 4 directions (2 blocks): {4 * total_per_dir / 1024 / 1024:.2f} MB")
 
         # Input quantization
+        # 对原始输入做量化（对应 FP32 版 FEMBA 中没有的一步：这里给输入信号打一个 INT8 量化"探针"）
         self.input_quant = qnn.QuantIdentity(
             bit_width=bit_width,
             return_quant_tensor=True
         )
 
         # Patch embedding: [B, 1, H, W] -> [B, seq_len, d_model]
+        # 量化版 PatchEmbed：内部用 QuantConv2d 做卷积切块+投影，输出再量化一次
         self.patch_embed = QuantPatchEmbed(
             inp_size=inp_size,
             patch_size=patch_size,
@@ -138,30 +160,36 @@ class FEMBATinyInt8(nn.Module):
         )
 
         # Positional embedding (learnable parameter)
+        # 可学习位置编码，参数本身仍是 FP32 存储
         self.pos_embed = nn.Parameter(
             torch.zeros(1, self.seq_len, self.d_model)
         )
         nn.init.trunc_normal_(self.pos_embed, std=0.02)
 
         # Quantization for positional embedding
+        # 位置编码单独量化，保证和 patch_embed 输出相加前 scale 可控
         self.pos_quant = qnn.QuantIdentity(
             bit_width=bit_width,
             return_quant_tensor=True
         )
 
         # Scale equalizer
+        # scale 均衡器：两路不同来源的量化张量相加前，先统一到同一个 scale，
+        # 否则 INT8 定点加法会因为 scale 不一致而出错
         self.scale_equalizer = qnn.QuantIdentity(
             bit_width=bit_width,
             return_quant_tensor=True
         )
 
         # Encoder blocks: BiMamba + Residual + LayerNorm
+        # 编码器：num_blocks 层 [双向Mamba + 残差 + LayerNorm + 量化] 堆叠
         self.mamba_blocks = nn.ModuleList()
         self.norm_layers = nn.ModuleList()
         self.post_norm_quants = nn.ModuleList()
 
         for i in range(num_blocks):
             # Bi-Mamba block with true FEMBA dimensions
+            # 双向 Mamba block（内部 in_proj/out_proj/x_proj/dt_proj 等线性层都是 QuantLinear）
             self.mamba_blocks.append(
                 QuantMambaWrapper(
                     d_model=self.d_model,
@@ -175,11 +203,13 @@ class FEMBATinyInt8(nn.Module):
             )
 
             # LayerNorm after residual
+            # 残差相加之后做 LayerNorm；LayerNorm 本身不量化，保持 FP32 计算
             self.norm_layers.append(
                 nn.LayerNorm(self.d_model)
             )
 
             # Post-norm quantization
+            # LayerNorm 输出（FP32）重新量化回 INT8，供下一个 block 使用
             self.post_norm_quants.append(
                 qnn.QuantIdentity(
                     bit_width=bit_width,
@@ -188,15 +218,18 @@ class FEMBATinyInt8(nn.Module):
             )
 
         # Global average pool over sequence
+        # 沿序列维度做全局平均池化，得到定长向量供分类头使用
         self.global_pool = nn.AdaptiveAvgPool1d(1)
 
         # Pre-classifier quantization
+        # 分类头之前再量化一次
         self.pre_classifier_quant = qnn.QuantIdentity(
             bit_width=bit_width,
             return_quant_tensor=True
         )
 
         # Final classifier
+        # 最终分类线性层，权重 INT8 量化；输出不再转成 QuantTensor（直接给 CE loss 用）
         self.classifier = qnn.QuantLinear(
             self.d_model,
             num_classes,
@@ -207,16 +240,20 @@ class FEMBATinyInt8(nn.Module):
 
     def forward(self, x):
         """Forward pass following FEMBA architecture."""
-        # Quantize input
+        # ===== 步骤1: 输入量化 =====
+        # 输入 x: [B, in_chans, H, W]，先量化成 QuantTensor（内部仍是 FP32，但携带 scale）
         x = self.input_quant(x)
 
         if hasattr(x, 'value'):
             x = x.value
 
-        # Patch embedding
+        # ===== 步骤2: Patch Embedding =====
+        # QuantConv2d 切 patch + 投影到 embed_dim，reshape/permute 成序列 [B, seq_len, d_model]
         x = self.patch_embed(x)
 
         # Add positional embedding
+        # ===== 步骤3: 加位置编码 =====
+        # pos_embed 先单独量化，再和 patch_embed 的输出分别过 scale_equalizer 对齐 scale 后相加
         pos = self.pos_quant(self.pos_embed)
 
         if hasattr(x, 'value'):
@@ -241,9 +278,11 @@ class FEMBATinyInt8(nn.Module):
             pos_val = pos
 
         x = x_val + pos_val
-        x = self.scale_equalizer(x)
+        x = self.scale_equalizer(x)  # 相加结果重新量化，供后续 encoder 使用
 
         # Encoder blocks
+        # ===== 步骤4: Encoder（双向 Mamba × num_blocks） =====
+        # 每个 block: 残差(res) + QuantMambaWrapper(正向+反向 Mamba 相加) + LayerNorm(FP32) + 重新量化
         for mamba_block, norm_layer, post_norm_quant in zip(
             self.mamba_blocks, self.norm_layers, self.post_norm_quants
         ):
@@ -267,6 +306,9 @@ class FEMBATinyInt8(nn.Module):
             x = x.value
 
         # Global pool and classify
+        # ===== 步骤5: 全局平均池化 + 分类 =====
+        # [B, seq_len, d_model] -> transpose -> [B, d_model, seq_len] -> 池化成 [B, d_model, 1]
+        # -> squeeze 成 [B, d_model] -> 量化 -> QuantLinear 分类头 -> [B, num_classes]
         x = x.transpose(1, 2)
         x = self.global_pool(x)
         x = x.squeeze(-1)
@@ -277,11 +319,13 @@ class FEMBATinyInt8(nn.Module):
 
 def get_sample_input(batch_size=1, in_chans=1, inp_size=(22, 1280)):
     """Generate a sample input tensor for testing."""
+    # 生成一个随机输入张量，仅用于 shape/流程验证，不代表真实 EEG 数据
     return torch.randn(batch_size, in_chans, inp_size[0], inp_size[1])
 
 
 def test_model():
     """Quick sanity test of the model."""
+    # 快速自检：构建模型 -> 跑一次前向 -> 打印输出 shape/参数量，确认结构没有搭错
     print("=" * 70)
     print("Test 34: FEMBA Tiny INT8 (True Architecture)")
     print("=" * 70)

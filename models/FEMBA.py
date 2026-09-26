@@ -266,21 +266,36 @@ class FEMBA(nn.Module):
             self.classifier = MambaClassifier(embed_dim, grid_size, num_classes, num_channels, classification_type)
 
     def forward(self, x, mask):
+        # ===== 步骤1: 输入 + 掩码 =====
+        # mask 由 MaskTask.generate_mask() 在模型外生成（见 tasks/pretrain_task.py 的"步骤0"），
+        # 这里只是把被选中的 patch 区域置零。x_original 保留未掩码的原始信号，用于计算重建损失。
         x_original = x
         x_masked = x.clone()
         x_masked[mask] = 0  # Apply mask
+
+        # ===== 步骤2: Patch Embedding =====
+        # Conv2d 把 (B, C, T) 切成 (patch_H, patch_W) 的块并投影到 embed_dim，
+        # 再 reshape/permute 成序列 (B, seq_len=grid_w, d_model=grid_h*embed_dim)，
+        # 然后加上可学习位置编码 pos_embed。
         x = self.patch_embed(x_masked)  # (B, T, D)
         x = x + self.pos_embed  # Add positional embedding
 
+        # ===== 步骤3: Encoder（双向 Mamba × num_blocks） =====
+        # 每个 block: 残差 + MambaWrapper（正向+反向 Mamba 相加）+ LayerNorm
         for mamba_block, norm_layer in zip(self.mamba_blocks, self.norm_layers):
             res = x
             x = mamba_block(x)
             x = res + x
             x = norm_layer(x)
 
+        # ===== 步骤4: 分支 —— Decoder（预训练重建）或 Classifier（微调分类） =====
+        # num_classes == 0 时走 Decoder 分支（自监督预训练）；
+        # num_classes > 0 时走 MambaClassifier 分支（下游分类微调）。
         if self.classifier is not None:
             x_classified = self.classifier(x)
+            # ===== 步骤5: 返回 (分类结果, 原始信号) =====
             return x_classified, x_original
         else:
             x_reconstructed = self.decoder(x)
+            # ===== 步骤5: 返回 (重建信号, 原始信号) —— 供 criterion 只在被掩码区域算损失 =====
             return x_reconstructed, x_original
