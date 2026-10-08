@@ -112,7 +112,10 @@ class FinetuneTask(pl.LightningModule):
         """
         assert self.model.classifier is not None
         print("Loading pretrained checkpoint")
-        ckpt = torch.load(model_ckpt)
+        # weights_only=False：Lightning checkpoint 里存了 Hydra 的 DictConfig，torch>=2.6 默认 weights_only=True 会拒绝加载；
+        # 这里加载的是自己训练出来的预训练 checkpoint，来源可信。
+        # map_location="cpu"：先在 CPU 上加载，之后由 Lightning 统一搬到 GPU（Brevitas 模型在 GPU 上加载会把量化内部张量重建到 CPU）
+        ckpt = torch.load(model_ckpt, map_location="cpu", weights_only=False)
         self.load_state_dict(ckpt['state_dict'], strict=False)
 
         for name, param in self.model.named_parameters():

@@ -14,70 +14,69 @@
 #* WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.   *
 #* See the License for the specific language governing permissions and        *
 #* limitations under the License.                                             *
-#*                                                                            *
-#* Author:  Anna Tegon                                                        *
-#* Author:  Thorir Mar Ingolfsson                                             *
 #*----------------------------------------------------------------------------*
-tag: FEMBA_quantized
+#
+# QAP (quantization-aware pretraining) of FEMBA_tiny INT8 on real EEG: the TUAR
+# train split (signals only), single GPU. First real QAP run, much smaller than
+# the TUEG pretraining in the FEMBA paper. See docs/07_qap_tuar_pretrain.md.
+#
+# Run:
+#   export DATA_PATH=/root/autodl-tmp/data
+#   export CHECKPOINT_DIR=/root/autodl-tmp/experiments
+#   python -u run_train.py +experiment=FEMBA_qap_tuar
+tag: FEMBA_qap_tuar
 
-gpus: 4
+gpus: 1
 num_nodes: 1
-num_workers: 16
-batch_size: 256
+num_workers: 4
+batch_size: 32
 
-training: True
 final_validate: True
-final_test: True
-finetune_pretrained: True
+final_test: False
 
-find_unused_parameters: True
+pretrained_checkpoint_path: null
+io:
+  base_output_path: ${env:CHECKPOINT_DIR}/tb_logs
+  checkpoint_dirpath: ${env:CHECKPOINT_DIR}/checkpoints
+  version: 0
 
-layerwise_lr_decay: 0.75
-scheduler_type: cosine
+defaults:
+  - override /data_module: pretrain_data_module_tuar
+  - override /model: FEMBA_tiny_int8_pretrain
+  - override /scheduler: multi_step_lr
+  - override /task: pretrain_task
+  - override /criterion: pretrain_criterion
 
-pretrained_checkpoint_path: "CHANGEME"
+masking:
+  patch_size: [2, 16]
+  masking_ratio: 0.6
 
 input_normalization:
   normalize: True
   quartile_normalization_lower_val: -20
   quartile_normalization_upper_val:  20
 
-finetuning:
-  freeze_layers: True
-
-io:
-  checkpoint_dirpath: ${env:CHECKPOINT_DIR}/checkpoints
-  version: 0
-
-defaults:
-  - override /data_module: finetune_data_module
-  - override /model: FEMBA_quantized
-  - override /scheduler: cosine
-  - override /task: finetune_task
-  - override /criterion: finetune_criterion
-
-model:
- num_classes: 2
- classification_type: "bc"
+# MaskTask only passes the optimizer to the scheduler, so cosine (which also needs
+# the total step count) cannot be used here; the default milestones (200k/400k
+# steps) are never reached in this run, i.e. the learning rate stays constant.
+scheduler:
+  gamma: 0.1
 
 trainer:
   accelerator: gpu
+  log_every_n_steps: 50
   num_nodes: ${num_nodes}
   devices: ${gpus}
-  strategy: ddp
-  max_epochs: 5
+  strategy: auto
+  max_epochs: 10
+  gradient_clip_val: 1
 
 model_checkpoint:
   save_last: True
-  save_top_k: 1
   monitor: "val_loss"
   mode: "min"
-
+  save_top_k: 1
 
 optimizer:
-  optim: 'AdamW'
-  lr: 5.0e-5
-  betas: [0.9, 0.999]
-  weight_decay: 0.5
-
-
+  optim: AdamW
+  lr: 1e-4

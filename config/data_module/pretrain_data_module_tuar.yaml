@@ -1,4 +1,4 @@
-# @package _global_ 
+# @package _global_
 #*----------------------------------------------------------------------------*
 #* Copyright (C) 2025 ETH Zurich, Switzerland                                 *
 #* SPDX-License-Identifier: Apache-2.0                                        *
@@ -14,20 +14,22 @@
 #* WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.   *
 #* See the License for the specific language governing permissions and        *
 #* limitations under the License.                                             *
-#*                                                                            *
-#* Author:  Anna Tegon                                                        *
-#* Author:  Thorir Mar Ingolfsson                                             *
 #*----------------------------------------------------------------------------*
-
-# FEMBA_tiny INT8 classifier for quantized fine-tuning (e.g. of QAP-pretrained
-# weights). FEMBATinyInt8Classifier adapts ARES FEMBATinyInt8 (test_25) to the
-# FinetuneTask interface, see models/FEMBA_int8.py. Supports classification_type
-# bc / mcc / ml only.
-model:
-  _target_: models.FEMBA_int8.FEMBATinyInt8Classifier
-  seq_length: 1280
-  num_channels: 22
-  embed_dim: 35
-  num_blocks: 2
-  num_classes: ${num_classes}
-  classification_type: ${classification_type}
+#
+# Self-supervised pretraining on the TUAR *train* split only (signals X, labels
+# ignored: finetune=False). val.h5 / test.h5 are left untouched for fine-tuning
+# evaluation, so there is no leakage. The pretraining val set is a random 10%
+# of train.h5, used only to monitor reconstruction loss.
+data_module:
+  _target_: 'data_module.pretrain_data_module.PretrainDataModule'
+  name: "eeg_tuar_pretrain"
+  cfg:
+    num_workers: ${num_workers}
+    batch_size: ${batch_size}
+  test: null
+  train_val_split_ratio: 0.9
+  datasets:
+    tuar_train:
+      _target_: 'datasets.hdf5_dataset.HDF5Loader'
+      finetune: False
+      hdf5_file: '${env:DATA_PATH}/TUAR_data/train.h5'

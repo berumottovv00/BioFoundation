@@ -23,7 +23,7 @@
 # io.base_output_path set. Goal: prove Hydra config, Lightning loop, mask
 # generation and the Brevitas INT8 encoder wire together end-to-end.
 #
-# Run (see docs/qap_step5_6_verification.md):
+# Run (see docs/03_qap_step5_6_verification.md):
 #   export DATA_PATH=/root/autodl-tmp/data
 #   export CHECKPOINT_DIR=/root/autodl-tmp/experiments
 #   python make_datasets/make_fake_pretrain_demo.py --out ${DATA_PATH}/demo/pretrain_fake.h5 --num-samples 1000

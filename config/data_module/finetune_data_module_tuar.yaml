@@ -1,4 +1,4 @@
-# @package _global_ 
+# @package _global_
 #*----------------------------------------------------------------------------*
 #* Copyright (C) 2025 ETH Zurich, Switzerland                                 *
 #* SPDX-License-Identifier: Apache-2.0                                        *
@@ -14,20 +14,24 @@
 #* WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.   *
 #* See the License for the specific language governing permissions and        *
 #* limitations under the License.                                             *
-#*                                                                            *
-#* Author:  Anna Tegon                                                        *
-#* Author:  Thorir Mar Ingolfsson                                             *
 #*----------------------------------------------------------------------------*
-
-# FEMBA_tiny INT8 classifier for quantized fine-tuning (e.g. of QAP-pretrained
-# weights). FEMBATinyInt8Classifier adapts ARES FEMBATinyInt8 (test_25) to the
-# FinetuneTask interface, see models/FEMBA_int8.py. Supports classification_type
-# bc / mcc / ml only.
-model:
-  _target_: models.FEMBA_int8.FEMBATinyInt8Classifier
-  seq_length: 1280
-  num_channels: 22
-  embed_dim: 35
-  num_blocks: 2
-  num_classes: ${num_classes}
-  classification_type: ${classification_type}
+#
+# TUAR fine-tuning data (same layout as finetune_data_module.yaml, which points
+# to TUAB). Expected under ${DATA_PATH}/TUAR_data/: train.h5 / val.h5 / test.h5,
+# each with groups holding X (N, 22, 1280) and y (N,). The copy used here has
+# binary labels (0 = no artifact, 1 = artifact), i.e. classification_type "bc".
+data_module:
+  _target_: data_module.finetune_data_module.FinetuneDataModule
+  name: "eeg_tuar"
+  cfg:
+    num_workers: ${num_workers}
+    batch_size: ${batch_size}
+  train:
+    _target_: 'datasets.hdf5_dataset.HDF5Loader'
+    hdf5_file: '${env:DATA_PATH}/TUAR_data/train.h5'
+  val:
+    _target_: 'datasets.hdf5_dataset.HDF5Loader'
+    hdf5_file: '${env:DATA_PATH}/TUAR_data/val.h5'
+  test:
+    _target_: 'datasets.hdf5_dataset.HDF5Loader'
+    hdf5_file: '${env:DATA_PATH}/TUAR_data/test.h5'
